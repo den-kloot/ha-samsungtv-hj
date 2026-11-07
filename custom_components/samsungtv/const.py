@@ -1,3 +1,6 @@
+# NOTICE: modified copy of Home Assistant's "samsungtv" integration (2026.11.0),
+# changed in 2026 for ha-samsungtv-hj (Apache-2.0). Unofficial, not supported by
+# the Home Assistant project. See README.md for the list of changes.
 """Constants for the Samsung TV integration."""
 
 import logging

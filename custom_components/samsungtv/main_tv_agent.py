@@ -1,3 +1,4 @@
+# Part of ha-samsungtv-hj (Apache-2.0). Unofficial, not part of Home Assistant.
 """Samsung MainTVAgent2 UPnP service (2014/2015 H/J-series TVs).
 
 H/J-series TVs paired with the "encrypted" method expose the vendor service

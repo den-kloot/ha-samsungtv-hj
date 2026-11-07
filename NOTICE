@@ -1,0 +1,13 @@
+ha-samsungtv-hj
+Unofficial modified copy of the "samsungtv" integration of Home Assistant
+(https://github.com/home-assistant/core), version 2026.11.0, licensed under the
+Apache License 2.0 (see LICENSE.md). Original copyright: the Home Assistant authors.
+
+Modified files are marked with a NOTICE header or listed in README.md
+("What exactly was changed"). This project is not affiliated with, endorsed by
+or supported by Samsung Electronics, Nabu Casa, the Open Home Foundation or the
+Home Assistant project. "Samsung" and "Home Assistant" are trademarks of their
+respective owners and are used only to describe compatibility.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND (see LICENSE.md,
+sections 7 and 8). Use at your own risk.
