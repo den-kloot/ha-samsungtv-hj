@@ -44,3 +44,10 @@ UPNP_SVC_MAIN_TV_AGENT = "urn:samsung.com:service:MainTVAgent2:1"
 
 # Time to wait before reloading entry upon device config change
 ENTRY_RELOAD_COOLDOWN = 5
+
+# ha-samsungtv-hj: models verified to work with the H/J enhancements
+# (MainTVAgent2 input list / current input / direct input switching, and
+# periodic volume polling). Only these models get the new behaviour; every
+# other TV keeps the stock Home Assistant behaviour. Add your exact model
+# string (as shown in the config entry, e.g. "UE55H8000") after testing it.
+HJ_ENHANCED_MODELS: frozenset[str] = frozenset({"UE55H8000"})

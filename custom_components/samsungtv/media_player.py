@@ -26,6 +26,7 @@ from homeassistant.components.media_player import (
     MediaPlayerState,
     MediaType,
 )
+from homeassistant.const import CONF_METHOD, CONF_MODEL
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
@@ -34,9 +35,17 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.util.async_ import create_eager_task
 
 from .bridge import SamsungTVWSBridge
-from .const import CONF_SSDP_RENDERING_CONTROL_LOCATION, DOMAIN, LOGGER
+from .const import (
+    CONF_SSDP_MAIN_TV_AGENT_LOCATION,
+    CONF_SSDP_RENDERING_CONTROL_LOCATION,
+    DOMAIN,
+    HJ_ENHANCED_MODELS,
+    LOGGER,
+    METHOD_ENCRYPTED_WEBSOCKET,
+)
 from .coordinator import SamsungTVConfigEntry, SamsungTVDataUpdateCoordinator
 from .entity import SamsungTVEntity
+from .main_tv_agent import MainTVAgent
 
 SOURCES = {"TV": "KEY_TV", "HDMI": "KEY_HDMI"}
 
@@ -100,6 +109,20 @@ class SamsungTVDevice(SamsungTVEntity, MediaPlayerEntity):
         self._dmr_device: DmrDevice | None = None
         self._upnp_server: AiohttpNotifyServer | None = None
 
+        # ha-samsungtv-hj: opt-in enhancements for verified H/J models only
+        entry_data = coordinator.config_entry.data
+        self._hj_enhanced: bool = (
+            entry_data.get(CONF_METHOD) == METHOD_ENCRYPTED_WEBSOCKET
+            and entry_data.get(CONF_MODEL) in HJ_ENHANCED_MODELS
+        )
+        self._main_tv_agent_location: str | None = (
+            entry_data.get(CONF_SSDP_MAIN_TV_AGENT_LOCATION)
+            if self._hj_enhanced
+            else None
+        )
+        self._main_tv_agent: MainTVAgent | None = None
+        self._main_tv_agent_failed: bool = False
+
     @property
     @override
     def supported_features(self) -> MediaPlayerEntityFeature:
@@ -112,6 +135,13 @@ class SamsungTVDevice(SamsungTVEntity, MediaPlayerEntity):
 
     def _update_sources(self) -> None:
         self._attr_source_list = list(SOURCES)
+        if self._main_tv_agent:
+            # Keep "TV"/"HDMI" (existing automations) and add the real inputs
+            self._attr_source_list.extend(
+                source
+                for source in self._main_tv_agent.sources
+                if source not in self._attr_source_list
+            )
         if app_list := self._app_list:
             self._attr_source_list.extend(app_list)
 
@@ -172,6 +202,73 @@ class SamsungTVDevice(SamsungTVEntity, MediaPlayerEntity):
 
         if startup_tasks:
             await asyncio.gather(*startup_tasks)
+
+        if self._hj_enhanced:
+            await self._async_hj_update()
+
+    async def _async_hj_update(self) -> None:
+        """Poll volume and input on verified H/J models (ha-samsungtv-hj)."""
+        changed = False
+        if self._dmr_device:
+            changed |= await self._async_poll_dmr_volume()
+        if self._main_tv_agent_location and not self._main_tv_agent_failed:
+            changed |= await self._async_update_main_tv_agent()
+        if changed and self.entity_id:
+            self.async_write_ha_state()
+
+    async def _async_poll_dmr_volume(self) -> bool:
+        """Poll GetVolume/GetMute even while subscribed.
+
+        H/J TVs accept the GENA subscription but often stop sending events
+        (e.g. while an HDMI input is active), which leaves volume_level stale.
+        """
+        assert self._dmr_device
+        poll = getattr(self._dmr_device, "_async_poll_state_variables", None)
+        try:
+            if poll is not None:
+                await poll(
+                    "RC", ["GetMute", "GetVolume"], InstanceID=0, Channel="Master"
+                )
+            else:  # pragma: no cover - library changed, use the public API
+                await self._dmr_device.async_update(do_ping=False)
+        except UpnpError as err:
+            LOGGER.debug("Unable to poll volume from %s: %r", self._host, err)
+            return False
+        return self._update_from_upnp()
+
+    async def _async_update_main_tv_agent(self) -> bool:
+        """Read the input list once and the current input on every update."""
+        assert self._main_tv_agent_location
+        if self._main_tv_agent is None:
+            agent = await MainTVAgent.async_create(
+                self.hass, self._main_tv_agent_location
+            )
+            if agent is None:
+                # Service not offered by this TV: keep stock behaviour for good
+                self._main_tv_agent_failed = True
+                return False
+            try:
+                await agent.async_update_sources()
+            except (UpnpError, KeyError) as err:
+                # e.g. 501 while the TV is not paired yet: retry next update
+                LOGGER.debug("MainTVAgent2 GetSourceList failed: %r", err)
+                return False
+            if not agent.sources:
+                return False
+            self._main_tv_agent = agent
+            self._update_sources()
+            LOGGER.debug(
+                "MainTVAgent2 inputs on %s: %s", self._host, list(agent.sources)
+            )
+        try:
+            current = await self._main_tv_agent.async_get_current_source()
+        except (UpnpError, KeyError) as err:
+            LOGGER.debug("MainTVAgent2 GetCurrentExternalSource failed: %r", err)
+            return False
+        if current != self._attr_source:
+            self._attr_source = current
+            return True
+        return False
 
     @callback
     def _update_from_upnp(self) -> bool:
@@ -392,6 +489,19 @@ class SamsungTVDevice(SamsungTVEntity, MediaPlayerEntity):
         if self._app_list and source in self._app_list:
             await self._async_launch_app(self._app_list[source])
             return
+
+        if self._main_tv_agent and source in self._main_tv_agent.sources:
+            try:
+                if await self._main_tv_agent.async_set_source(source):
+                    self._attr_source = source
+                    self.async_write_ha_state()
+                    return
+            except (UpnpError, KeyError) as err:
+                LOGGER.debug("MainTVAgent2 SetMainTVSource(%s) failed: %r", source, err)
+            # Fall back to the stock key-based behaviour
+            if source not in SOURCES and source.startswith("HDMI"):
+                await self._async_send_keys([SOURCES["HDMI"]])
+                return
 
         if source in SOURCES:
             await self._async_send_keys([SOURCES[source]])
